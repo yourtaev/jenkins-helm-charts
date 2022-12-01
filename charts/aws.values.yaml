@@ -1,0 +1,237 @@
+controller:
+#  image: "yourtaev/jenkins"
+#  tag: "2.303.1-jdk11"
+#
+  tolerations:
+  - effect: NoSchedule
+    key: dedicated
+    operator: Equal
+    value: infra
+
+  installPlugins:
+    - kubernetes:3580.v78271e5631dc
+    - workflow-aggregator:2.6
+    - git:4.10.0
+    - configuration-as-code:1429.v09b_044a_c93de
+
+  additionalPlugins: 
+    - uno-choice:2.5.7
+    - strict-crumb-issuer:2.1.0
+    - docker-workflow:1.26
+    - bitbucket-push-and-pull-request:2.8.1
+    - ansicolor:1.0.1
+    - slack:2.49
+    - ldap:2.7
+    - matrix-auth:3.0
+    - git-parameter:0.9.13
+    - pipeline-aws:1.43
+
+  additionalSecrets:
+    - name: github_username
+      value: dev@ontoforce.com
+
+    - name: github_password
+      value: (#y[]u0D9*Pq[ye6?DaX@9L~mDEjKOR=
+
+    - name: slack_id
+      value: slack-notification
+
+    - name: slack_token
+      value: RwKddYhwn5G4tpfkdjMP7m67
+
+  csrf:
+    defaultCrumbIssuer:
+      enabled: false
+
+  enableRawHtmlMarkupFormatter: true
+
+  ingress:
+    enabled: true
+    hostName: jenkins.aws-dev.disqover.com
+
+    annotations:
+      kubernetes.io/ingress.class: alb
+      alb.ingress.kubernetes.io/scheme: internal
+      alb.ingress.kubernetes.io/target-type: ip
+      alb.ingress.kubernetes.io/listen-ports: '[{"HTTP": 80,"HTTPS": 443}]'
+      alb.ingress.kubernetes.io/actions.ssl-redirect: '{"Type": "redirect", "RedirectConfig": { "Protocol": "HTTPS", "Port": "443", "StatusCode": "HTTP_301"}}'
+
+    path: "/*"
+
+    tls:
+      - secretName: jenkins-tls
+        hosts:
+          - jenkins.aws-dev.disqover.com
+
+  initContainerEnv:
+    - name: JENKINS_UC_DOWNLOAD
+      value: http://ftp-nyc.osuosl.org/pub/jenkins
+
+  JCasC:
+    configScripts:
+      my-config: |
+        credentials:
+          system:
+            domainCredentials:
+            - credentials:
+              - usernamePassword:
+                  id: "github-username"
+                  username: "${github_username}"
+                  password: "${github_password}"
+                  description: "Github user credentials"
+                  scope: GLOBAL
+                  usernameSecret: true
+              - string:
+                  id: "${slack_id}"
+                  scope: GLOBAL
+                  secret: kXmDi55X4zWGC6UZzKOEY57U
+        jenkins:
+          authorizationStrategy:
+            globalMatrix:
+              permissions:
+              - "Overall/Administer:admin"
+              - "Agent/Build:authenticated"
+              - "Job/Build:authenticated"
+              - "Job/Cancel:authenticated"
+              - "Job/Discover:authenticated"
+              - "Job/Read:authenticated"
+              - "Metrics/View:authenticated"
+              - "Overall/Read:authenticated"
+              - "Run/Replay:authenticated"
+              - "View/Read:authenticated"
+
+          securityRealm:
+            ldap:
+              configurations:
+              - displayNameAttributeName: "cn"
+                groupSearchBase: "ou=groups"
+                inhibitInferRootDN: false
+                managerDN: "cn=admin,dc=infra,dc=kube"
+                managerPasswordSecret: "{AQAAABAAAAAgNlp+7s4OeuzgKpNc2cc2C0FZxd5ERcFVlQDmrSk1SljLjntOibEk9mJ14LhKZm8j}"
+                rootDN: "dc=infra,dc=kube"
+                server: "ldap://ldap.infra.kube:389"
+                userSearchBase: "ou=users"
+              disableMailAddressResolver: false
+              disableRolePrefixing: true
+              groupIdStrategy: "caseInsensitive"
+              userIdStrategy: "caseInsensitive"
+          systemMessage: Welcome to Ontoforce Jenkins server
+          crumbIssuer: 
+            strict:
+              hoursValid: 4
+        unclassified:
+          slackNotifier:
+             botUser: false
+             room: "jenkins"
+             sendAsText: false
+             teamDomain: "ontoforce"
+             tokenCredentialId: "${slack_id}"
+              
+agent:
+  podTemplates:
+    builder: |
+      - name: builder
+        label: jenkins-builder
+        serviceAccount: jenkins
+
+        yaml: |-
+          apiVersion: "v1"
+          kind: "Pod"
+          metadata:
+          spec:
+            tolerations:
+                - key: dedicated
+                  operator: Equal
+                  value: builder
+                  effect: NoSchedule
+            affinity:
+              nodeAffinity:
+                requiredDuringSchedulingIgnoredDuringExecution:
+                  nodeSelectorTerms:
+                  - matchExpressions:
+                    - key: jenkins/role
+                      operator: In
+                      values:
+                      - builder
+
+        containers:
+          - name: builder
+            image: 428025064471.dkr.ecr.us-east-1.amazonaws.com/base-images:latest
+            command: "/bin/sh -c"
+            args: "cat"
+            ttyEnabled: true
+            privileged: true
+            resourceRequestEphemeralStorage: "5G"
+            resourceRequestMemory: "8G"
+            resourceRequestCpu: 2
+          - name: docker
+            image: 428025064471.dkr.ecr.us-east-1.amazonaws.com/dind:latest
+            command: "/bin/sh -c"
+            args: "cat"
+            ttyEnabled: true
+            privileged: true
+            resourceRequestEphemeralStorage: "10G"
+            resourceRequestMemory: "2G"
+            resourceRequestCpu: 1
+        nodeSelector: "dedicated-for/instance-group=builder"
+        volumes:
+        - hostPathVolume:
+            hostPath: "/var/run/docker.sock"
+            mountPath: "/var/run/docker.sock"
+        - persistentVolumeClaim:
+            claimName: "maven-m2-repo"
+            mountPath: "/root/.m2/repository"
+            readOnly: false
+
+    tester: |
+      - name: tester
+        label: jenkins-tester
+        serviceAccount: jenkins
+
+        yaml: |-
+          apiVersion: "v1"
+          kind: "Pod"
+          metadata:
+          spec:
+            tolerations:
+                - key: dedicated
+                  operator: Equal
+                  value: tester
+                  effect: NoSchedule
+            affinity:
+              nodeAffinity:
+                requiredDuringSchedulingIgnoredDuringExecution:
+                  nodeSelectorTerms:
+                  - matchExpressions:
+                    - key: jenkins/role
+                      operator: In
+                      values:
+                      - tester
+
+        containers:
+          - name: tester
+            image: 428025064471.dkr.ecr.us-east-1.amazonaws.com/base-images:latest
+            command: "/bin/sh -c"
+            args: "cat"
+            ttyEnabled: true
+            privileged: true
+            resourceRequestEphemeralStorage: "5G"
+            resourceRequestMemory: "8G"
+            resourceRequestCpu: 2
+        nodeSelector: "dedicated-for/instance-group=tester"
+        volumes:
+        - hostPathVolume:
+            hostPath: "/var/run/docker.sock"
+            mountPath: "/var/run/docker.sock"
+
+#serviceAccount:
+#  create: false
+#  # The name of the service account is autogenerated by default
+#  name: jenkins
+#  annotations: {}
+#
+#serviceAccountAgent:
+#  create: false
+#  name: jenkins
+#  annotations: {}
+
